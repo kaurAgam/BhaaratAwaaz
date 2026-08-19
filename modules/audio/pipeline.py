@@ -53,9 +53,24 @@ class AudioPipeline:
             device=translation_device,
         )
 
-        self.tts = TTS(
-            device=Config.TTS_DEVICE,
-        )
+        # TTS is loaded lazily.
+        # It will NOT load when the pipeline starts.
+        self.tts = None
+
+    def _get_tts(self) -> TTS:
+        """
+        Load TTS model only when TTS is actually required.
+        """
+
+        if self.tts is None:
+
+            logger.info("Loading TTS model...")
+
+            self.tts = TTS(
+                device=Config.TTS_DEVICE,
+            )
+
+        return self.tts
 
     def _validate_input(
         self,
@@ -99,6 +114,7 @@ class AudioPipeline:
         input_audio: str | Path,
         target_language: str,
         source_language: str | None = None,
+        use_tts: bool = False,
     ) -> dict:
 
         Config.create_directories()
@@ -113,29 +129,31 @@ class AudioPipeline:
         )
 
         if source_language is not None:
+
             self._validate_language(
                 source_language,
                 "source",
             )
 
         logger.info(
-            "Starting audio pipeline | input=%s | target=%s",
+            "Starting audio pipeline | input=%s | target=%s | TTS=%s",
             input_audio,
             target_language,
+            use_tts,
         )
 
-        # --------------------------------------------------
-        # 1. Preprocessing
-        # --------------------------------------------------
+        # ==================================================
+        # 1. PREPROCESSING
+        # ==================================================
 
         normalized_audio = preprocess_audio(
             input_path=input_audio,
             output_directory=Config.TEMP_DIR,
         )
 
-        # --------------------------------------------------
+        # ==================================================
         # 2. ASR
-        # --------------------------------------------------
+        # ==================================================
 
         asr_result = self.asr.transcribe(
             normalized_audio.output_path,
@@ -149,9 +167,9 @@ class AudioPipeline:
             "detected",
         )
 
-        # --------------------------------------------------
-        # 3. Translation
-        # --------------------------------------------------
+        # ==================================================
+        # 3. TRANSLATION
+        # ==================================================
 
         translated_segments = (
             self.translator.translate_segments(
@@ -162,44 +180,53 @@ class AudioPipeline:
         )
 
         # ==================================================
-        # 4. TTS
+        # 4. TTS - OPTIONAL
         # ==================================================
 
-        translated_text = " ".join(
-            segment["translated_text"]
-            for segment in translated_segments
-        )
+        tts_output_path = None
 
-        tts_output_path = (
-            Config.OUTPUT_DIR
-            / f"{input_audio.stem}_{target_language}.wav"
-        )
+        if use_tts:
 
-        logger.info(
-            "Starting TTS | language=%s | output=%s",
-            target_language,
-            tts_output_path,
-        )
+            translated_text = " ".join(
+                segment["translated_text"]
+                for segment in translated_segments
+            )
 
-        self.tts.synthesize(
-            text=translated_text,
-            language=target_language,
-            output_path=tts_output_path,
-        )
-        # --------------------------------------------------
-        # 5. Output
-        # --------------------------------------------------
+            tts_output_path = (
+                Config.OUTPUT_DIR
+                / f"{input_audio.stem}_{target_language}.wav"
+            )
+
+            logger.info(
+                "Starting TTS | language=%s | output=%s",
+                target_language,
+                tts_output_path,
+            )
+
+            tts = self._get_tts()
+
+            tts.synthesize(
+                text=translated_text,
+                language=target_language,
+                output_path=tts_output_path,
+            )
+
+        # ==================================================
+        # 5. OUTPUT
+        # ==================================================
 
         output_data = {
             "audio_file": str(
                 input_audio.resolve()
             ),
+
             "normalized_audio": {
                 "file": normalized_audio.output_path,
                 "sample_rate": Config.SAMPLE_RATE,
                 "channels": Config.CHANNELS,
                 "format": Config.AUDIO_FORMAT,
             },
+
             "asr": {
                 "model": self.asr.model_size,
                 "device": self.asr.device,
@@ -209,18 +236,34 @@ class AudioPipeline:
                     "language_probability"
                 ],
             },
+
             "translation": {
                 "source_language": detected_language,
                 "target_language": target_language,
             },
+
             "tts": {
-                "language": target_language,
-                "output_file": str(tts_output_path),
+                "enabled": use_tts,
+                "language": target_language if use_tts else None,
+                "output_file": (
+                    str(tts_output_path)
+                    if tts_output_path
+                    else None
+                ),
             },
 
-            "output_audio": str(tts_output_path),
+            "output_audio": (
+                str(tts_output_path)
+                if tts_output_path
+                else None
+            ),
+
             "segments": translated_segments,
         }
+
+        # ==================================================
+        # Save JSON
+        # ==================================================
 
         output_path = (
             Config.OUTPUT_DIR

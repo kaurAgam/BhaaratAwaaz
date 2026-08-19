@@ -75,14 +75,19 @@ async def translate_audio(
     audio_file: UploadFile = File(...),
     target_language: str = Form(...),
     source_language: str | None = Form(None),
+    use_tts: bool = Form(False),
 ):
     """
-    Translate an uploaded audio file and return
-    the generated speech audio.
+    Translate an uploaded audio file.
+
+    Parameters
+    ----------
+    audio_file:
+        Input audio file.
 
     source_language:
         Optional.
-        If omitted, ASR automatically detects it.
+        If omitted, ASR detects the language.
 
     target_language:
         Required.
@@ -90,6 +95,13 @@ async def translate_audio(
             en
             hi
             mr
+
+    use_tts:
+        Optional.
+        Default: false.
+
+        false -> return translation JSON
+        true  -> generate and return translated WAV
     """
 
     # --------------------------------------------------------
@@ -97,6 +109,7 @@ async def translate_audio(
     # --------------------------------------------------------
 
     if target_language not in SUPPORTED_LANGUAGES:
+
         raise HTTPException(
             status_code=400,
             detail=(
@@ -114,6 +127,7 @@ async def translate_audio(
     if source_language is not None:
 
         if source_language not in SUPPORTED_LANGUAGES:
+
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -129,17 +143,21 @@ async def translate_audio(
     # --------------------------------------------------------
 
     if not audio_file.filename:
+
         raise HTTPException(
             status_code=400,
             detail="No audio filename provided.",
         )
 
-    original_name = Path(audio_file.filename)
+    original_name = Path(
+        audio_file.filename
+    )
 
     if (
         original_name.suffix.lower()
         not in SUPPORTED_AUDIO_EXTENSIONS
     ):
+
         raise HTTPException(
             status_code=400,
             detail=(
@@ -173,64 +191,72 @@ async def translate_audio(
             )
 
         # ----------------------------------------------------
-        # Run complete pipeline
-        #
-        # preprocessing
-        #      ↓
-        # ASR
-        #      ↓
-        # translation
-        #      ↓
-        # TTS
-        #      ↓
-        # translated WAV
+        # Run pipeline
         # ----------------------------------------------------
 
         result = pipeline.process(
             input_audio=input_path,
             target_language=target_language,
             source_language=source_language,
+            use_tts=use_tts,
         )
 
-        # ----------------------------------------------------
-        # Get generated audio
-        # ----------------------------------------------------
+        # ====================================================
+        # TTS REQUESTED
+        # ====================================================
 
-        output_path = Path(
-            result["output_audio"]
-        )
+        if use_tts:
 
-        if not output_path.exists():
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Pipeline completed but "
-                    "output audio was not created."
-                ),
+            output_path = Path(
+                result["output_audio"]
             )
 
-        # ----------------------------------------------------
-        # Return generated WAV
-        # ----------------------------------------------------
+            if not output_path.exists():
 
-        return FileResponse(
-            path=output_path,
-            media_type="audio/wav",
-            filename=(
-                f"translated_"
-                f"{original_name.stem}.wav"
-            ),
-            headers={
-                "X-Source-Language": result[
-                    "translation"
-                ]["source_language"],
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Pipeline completed but "
+                        "output audio was not created."
+                    ),
+                )
 
-                "X-Target-Language": result[
-                    "translation"
-                ]["target_language"],
-            },
-        )
+            return FileResponse(
+                path=output_path,
+                media_type="audio/wav",
+                filename=(
+                    f"translated_"
+                    f"{original_name.stem}.wav"
+                ),
+                headers={
+                    "X-Source-Language": result[
+                        "translation"
+                    ]["source_language"],
+
+                    "X-Target-Language": result[
+                        "translation"
+                    ]["target_language"],
+
+                    "X-TTS-Enabled": "true",
+                },
+            )
+
+        # ====================================================
+        # TTS NOT REQUESTED
+        # ====================================================
+
+        return {
+            "status": "success",
+            "tts_enabled": False,
+            "source_language": result[
+                "translation"
+            ]["source_language"],
+            "target_language": result[
+                "translation"
+            ]["target_language"],
+            "segments": result["segments"],
+            "output_file": result["output_file"],
+        }
 
     except HTTPException:
         raise

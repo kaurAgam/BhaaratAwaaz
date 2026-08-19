@@ -1,30 +1,22 @@
 from __future__ import annotations
-from logging import info
-from shared.config import Config
-from shared.logging import setup_logging
 
 import json
 from pathlib import Path
 
 from faster_whisper import WhisperModel
 
+from shared.config import Config
+from shared.logging import setup_logging
+
+
 logger = setup_logging()
+
 
 class ASRError(Exception):
     """Base exception for ASR-related errors."""
 
 
 class ASR:
-    """
-    Speech-to-text module for BhaaratAwaaz.
-
-    Default configuration:
-        Model       : faster-whisper medium
-        Device      : CPU
-        Compute     : INT8
-        Beam size   : 5
-        VAD         : Enabled
-    """
 
     def __init__(
         self,
@@ -32,6 +24,7 @@ class ASR:
         device: str = Config.ASR_DEVICE,
         compute_type: str = Config.ASR_COMPUTE_TYPE,
     ):
+
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
@@ -47,6 +40,7 @@ class ASR:
         audio_path: str | Path,
         language: str | None = None,
     ) -> dict:
+
         logger.info(
             "Starting ASR | model=%s | device=%s | compute=%s | audio=%s",
             self.model_size,
@@ -54,6 +48,7 @@ class ASR:
             self.compute_type,
             audio_path,
         )
+
         audio_path = Path(audio_path)
 
         if not audio_path.exists():
@@ -67,11 +62,13 @@ class ASR:
             )
 
         try:
+
             segments, info = self.model.transcribe(
                 str(audio_path),
 
                 language=language,
 
+                # Keep VAD
                 vad_filter=Config.VAD_ENABLED,
 
                 vad_parameters={
@@ -79,30 +76,53 @@ class ASR:
                         Config.VAD_MIN_SILENCE_MS,
                 },
 
+                # Faster than beam 5
                 beam_size=Config.ASR_BEAM_SIZE,
+
+                # Speed optimization
+                condition_on_previous_text=False,
+
+                # Deterministic decoding
+                temperature=0.0,
             )
 
             transcript_segments = []
 
-            # segments is a generator, so iteration
-            # triggers the actual transcription.
-            for index, segment in enumerate(segments, start=1):
+            for index, segment in enumerate(
+                segments,
+                start=1,
+            ):
+
+                text = segment.text.strip()
+
+                if not text:
+                    continue
+
                 transcript_segments.append(
                     {
                         "id": index,
                         "start": segment.start,
                         "end": segment.end,
-                        "text": segment.text.strip(),
+                        "text": text,
                     }
                 )
 
+            logger.info(
+                "ASR completed | language=%s | probability=%.3f | segments=%d",
+                info.language,
+                info.language_probability,
+                len(transcript_segments),
+            )
+
             return {
                 "language": info.language,
-                "language_probability": info.language_probability,
+                "language_probability":
+                    info.language_probability,
                 "segments": transcript_segments,
             }
 
         except Exception as exc:
+
             raise ASRError(
                 f"Failed to transcribe audio: {audio_path}"
             ) from exc
@@ -134,9 +154,8 @@ class ASR:
             "device": self.device,
             "compute_type": self.compute_type,
             "language": result["language"],
-            "language_probability": result[
-                "language_probability"
-            ],
+            "language_probability":
+                result["language_probability"],
             "segments": result["segments"],
         }
 
@@ -144,16 +163,12 @@ class ASR:
             "w",
             encoding="utf-8",
         ) as file:
+
             json.dump(
                 output_data,
                 file,
                 ensure_ascii=False,
                 indent=2,
             )
-        logger.info(
-            "ASR completed | language=%s | probability=%.3f | segments=%d",
-            info.language,
-            info.language_probability,
-            len(transcript_segments),
-        )
+
         return output_data

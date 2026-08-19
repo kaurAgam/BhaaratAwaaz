@@ -31,7 +31,7 @@ class Config:
         "int8",
     )
 
-    ASR_BEAM_SIZE = 5
+    ASR_BEAM_SIZE = 3
 
     # VAD
     VAD_ENABLED = True
@@ -46,6 +46,26 @@ class Config:
     TRANSLATION_DEVICE = os.getenv(
         "BAHAARTAWAAZ_TRANSLATION_DEVICE",
         "cpu",
+    )
+    TRANSLATION_BATCH_SIZE = int(
+    os.getenv(
+        "BAHAARTAWAAZ_TRANSLATION_BATCH_SIZE",
+        "8",
+    )
+    )
+    
+    TRANSLATION_NUM_BEAMS = int(
+        os.getenv(
+            "BAHAARTAWAAZ_TRANSLATION_NUM_BEAMS",
+            "2",
+        )
+    )
+    
+    TRANSLATION_MAX_NEW_TOKENS = int(
+        os.getenv(
+            "BAHAARTAWAAZ_TRANSLATION_MAX_NEW_TOKENS",
+            "128",
+        )
     )
 
     # --------------------------------------------------

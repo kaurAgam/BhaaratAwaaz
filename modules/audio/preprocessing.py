@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import av
-import numpy as np
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +11,7 @@ from typing import Optional
 # Configuration
 # ============================================================
 
-MAX_AUDIO_DURATION_SECONDS = 30 * 60  # 30 minutes
+MAX_AUDIO_DURATION_SECONDS = 30 * 60
 
 TARGET_SAMPLE_RATE = 16_000
 TARGET_CHANNELS = 1
@@ -75,14 +74,6 @@ class NormalizedAudio:
 # ============================================================
 
 def validate_file(audio_path: str | Path) -> Path:
-    """
-    Basic file validation.
-
-    Checks:
-    - file exists
-    - path is a file
-    - extension is supported
-    """
 
     audio_path = Path(audio_path)
 
@@ -108,142 +99,123 @@ def validate_file(audio_path: str | Path) -> Path:
 # Metadata extraction
 # ============================================================
 
+def _extract_metadata(
+    audio_path: Path,
+    container: av.container.InputContainer,
+) -> AudioMetadata:
+
+    audio_stream = next(
+        (
+            stream
+            for stream in container.streams
+            if stream.type == "audio"
+        ),
+        None,
+    )
+
+    if audio_stream is None:
+        raise AudioValidationError(
+            f"No audio stream found in: {audio_path}"
+        )
+
+    duration_seconds = 0.0
+
+    if audio_stream.duration is not None:
+
+        duration_seconds = float(
+            audio_stream.duration
+            * float(audio_stream.time_base)
+        )
+
+    elif container.duration is not None:
+
+        duration_seconds = (
+            float(container.duration) / 1_000_000
+        )
+
+    if duration_seconds <= 0:
+
+        raise AudioValidationError(
+            "Audio duration is zero or could not be determined."
+        )
+
+    if duration_seconds > MAX_AUDIO_DURATION_SECONDS:
+
+        raise AudioValidationError(
+            f"Audio duration is "
+            f"{duration_seconds / 60:.2f} minutes. "
+            f"Maximum allowed duration is 30 minutes."
+        )
+
+    sample_rate = (
+        audio_stream.codec_context.sample_rate
+    )
+
+    channels = (
+        audio_stream.codec_context.channels
+    )
+
+    format_name = None
+
+    if container.format is not None:
+        format_name = container.format.name
+
+    return AudioMetadata(
+        file_path=str(audio_path.resolve()),
+        duration_seconds=duration_seconds,
+        sample_rate=sample_rate,
+        channels=channels,
+        format=format_name,
+        size_bytes=audio_path.stat().st_size,
+    )
+
+
 def get_audio_metadata(
     audio_path: str | Path,
 ) -> AudioMetadata:
-    """
-    Extract metadata using PyAV.
-
-    PyAV is the same audio/video decoding library used
-    internally by Faster-Whisper.
-    """
 
     audio_path = validate_file(audio_path)
 
     try:
+
         container = av.open(str(audio_path))
 
     except av.error.FFmpegError as exc:
+
         raise AudioValidationError(
             f"Unable to open audio file: {audio_path}"
         ) from exc
 
     try:
-        # Find the first audio stream.
-        audio_stream = next(
-            (
-                stream
-                for stream in container.streams
-                if stream.type == "audio"
-            ),
-            None,
-        )
 
-        if audio_stream is None:
-            raise AudioValidationError(
-                f"No audio stream found in: {audio_path}"
-            )
-
-        # ----------------------------------------------------
-        # Duration
-        # ----------------------------------------------------
-
-        duration_seconds = 0.0
-
-        if audio_stream.duration is not None:
-            duration_seconds = float(
-                audio_stream.duration
-                * float(audio_stream.time_base)
-            )
-
-        elif container.duration is not None:
-            # container.duration is in microseconds
-            duration_seconds = (
-                float(container.duration) / 1_000_000
-            )
-
-        # ----------------------------------------------------
-        # Audio properties
-        # ----------------------------------------------------
-
-        sample_rate = audio_stream.codec_context.sample_rate
-        channels = audio_stream.codec_context.channels
-
-        format_name = None
-
-        if container.format is not None:
-            format_name = container.format.name
-
-        return AudioMetadata(
-            file_path=str(audio_path.resolve()),
-            duration_seconds=duration_seconds,
-            sample_rate=sample_rate,
-            channels=channels,
-            format=format_name,
-            size_bytes=audio_path.stat().st_size,
+        return _extract_metadata(
+            audio_path,
+            container,
         )
 
     finally:
+
         container.close()
 
-
-# ============================================================
-# Validate audio
-# ============================================================
 
 def validate_audio(
     audio_path: str | Path,
 ) -> AudioMetadata:
-    """
-    Validate an audio file for BhaaratAwaaz.
 
-    Rules:
-    - Must contain an audio stream.
-    - Duration must be > 0.
-    - Maximum duration is 30 minutes.
-    """
-
-    metadata = get_audio_metadata(audio_path)
-
-    if metadata.duration_seconds <= 0:
-        raise AudioValidationError(
-            "Audio duration is zero or could not be determined."
-        )
-
-    if metadata.duration_seconds > MAX_AUDIO_DURATION_SECONDS:
-        raise AudioValidationError(
-            f"Audio duration is "
-            f"{metadata.duration_seconds / 60:.2f} minutes. "
-            f"Maximum allowed duration is 30 minutes."
-        )
-
-    return metadata
+    return get_audio_metadata(audio_path)
 
 
 # ============================================================
-# Audio decoding + normalization
+# Normalization
 # ============================================================
 
 def normalize_audio(
     input_path: str | Path,
     output_path: str | Path,
 ) -> NormalizedAudio:
-    """
-    Decode and normalize audio using PyAV.
 
-    Output:
-        - WAV
-        - PCM signed 16-bit
-        - Mono
-        - 16 kHz
-
-    No external ffmpeg.exe is required.
-    """
-
-    input_path = Path(input_path)
+    input_path = validate_file(input_path)
     output_path = Path(output_path)
-
-    metadata = validate_audio(input_path)
 
     output_path.parent.mkdir(
         parents=True,
@@ -251,14 +223,32 @@ def normalize_audio(
     )
 
     try:
-        input_container = av.open(str(input_path))
+
+        input_container = av.open(
+            str(input_path)
+        )
 
     except av.error.FFmpegError as exc:
+
         raise AudioNormalizationError(
             f"Unable to open input audio: {input_path}"
         ) from exc
 
     try:
+
+        # ----------------------------------------------------
+        # Metadata + validation
+        # ----------------------------------------------------
+
+        metadata = _extract_metadata(
+            input_path,
+            input_container,
+        )
+
+        # ----------------------------------------------------
+        # Find audio stream
+        # ----------------------------------------------------
+
         audio_stream = next(
             (
                 stream
@@ -274,7 +264,7 @@ def normalize_audio(
             )
 
         # ----------------------------------------------------
-        # Create output WAV container
+        # Output WAV
         # ----------------------------------------------------
 
         output_container = av.open(
@@ -284,6 +274,7 @@ def normalize_audio(
         )
 
         try:
+
             output_stream = output_container.add_stream(
                 "pcm_s16le",
                 rate=TARGET_SAMPLE_RATE,
@@ -302,17 +293,24 @@ def normalize_audio(
             )
 
             # ------------------------------------------------
-            # Decode → resample → encode
+            # Decode → Resample → Encode
             # ------------------------------------------------
 
-            for frame in input_container.decode(audio_stream):
-                resampled_frames = resampler.resample(frame)
+            for frame in input_container.decode(
+                audio_stream
+            ):
+
+                resampled_frames = (
+                    resampler.resample(frame)
+                )
 
                 for resampled_frame in resampled_frames:
 
-                    for packet in output_stream.encode(
+                    packets = output_stream.encode(
                         resampled_frame
-                    ):
+                    )
+
+                    for packet in packets:
                         output_container.mux(packet)
 
             # ------------------------------------------------
@@ -323,7 +321,9 @@ def normalize_audio(
 
             for frame in flushed_frames:
 
-                for packet in output_stream.encode(frame):
+                packets = output_stream.encode(frame)
+
+                for packet in packets:
                     output_container.mux(packet)
 
             # ------------------------------------------------
@@ -334,11 +334,11 @@ def normalize_audio(
                 output_container.mux(packet)
 
         finally:
+
             output_container.close()
 
     except Exception as exc:
 
-        # Remove incomplete output if normalization failed.
         if output_path.exists():
             output_path.unlink()
 
@@ -350,9 +350,11 @@ def normalize_audio(
         ) from exc
 
     finally:
+
         input_container.close()
 
     if not output_path.exists():
+
         raise AudioNormalizationError(
             "Normalization completed but output file "
             "was not created."
@@ -376,27 +378,6 @@ def preprocess_audio(
     input_path: str | Path,
     output_directory: str | Path,
 ) -> NormalizedAudio:
-    """
-    Complete BhaaratAwaaz preprocessing pipeline.
-
-    Steps:
-
-        Input audio
-             ↓
-        Validate file
-             ↓
-        Read metadata
-             ↓
-        Check 30-minute limit
-             ↓
-        Decode with PyAV
-             ↓
-        Resample to 16 kHz
-             ↓
-        Convert to mono
-             ↓
-        Convert to PCM 16-bit WAV
-    """
 
     input_path = validate_file(input_path)
 
